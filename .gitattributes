@@ -1,0 +1,16 @@
+# Default: normalize text files to LF
+* text=auto eol=lf
+
+# PHP source files
+*.php text eol=lf
+
+# Common web assets
+*.css text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.sql text eol=lf
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf

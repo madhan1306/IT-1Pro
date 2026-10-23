@@ -1,0 +1,18 @@
+[
+    {
+        "label": "India (IST)",
+        "timezone": "Asia\/Kolkata"
+    },
+    {
+        "label": "New York (EST)",
+        "timezone": "America\/New_York"
+    },
+    {
+        "label": "PDT\/PST",
+        "timezone": "America\/Los_Angeles"
+    },
+    {
+        "label": "UTC",
+        "timezone": "UTC"
+    }
+]
