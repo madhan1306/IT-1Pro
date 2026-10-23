@@ -1,0 +1,14 @@
+# Prevent Directory Listing
+Options -Indexes
+
+RewriteEngine On
+RewriteBase /
+
+# Deny access to sensitive folders
+RewriteRule ^includes/ - [F,L]
+RewriteRule ^install/ - [F,L]
+
+# Clean URL Routing
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^([^/]+)/?$ index.php?route=$1 [QSA,L]

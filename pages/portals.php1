@@ -1,0 +1,873 @@
+<?php
+// FILE: /pages/portals.php - FINAL CORRECTED VERSION WITH FULL-WIDTH FLUID GRID & ALERTS
+
+include_once '../includes/error_handler.php';
+// --- Declare this as a public page so auth.php does not kick out users with expired sessions ---
+if (!defined('ALLOW_PUBLIC_ACCESS')) {
+    define('ALLOW_PUBLIC_ACCESS', true);
+}
+
+include_once '../includes/db_connect.php';
+include_once '../includes/auth.php';
+
+$pageTitle = "Internal Portals";
+
+// Define the unique administrator ID
+$super_user_id = 1;
+$current_user_id = (int)($_SESSION['user_id'] ?? 0);
+$is_logged_in = isset($_SESSION['loggedin']) && $_SESSION['loggedin'] === true;
+
+// 1. Check if the current user is the Super User (ID 1)
+$is_super_user = ($is_logged_in && $current_user_id === $super_user_id); 
+
+// 2. Normalize the user's department for department-based filtering
+$user_dept = $is_logged_in ? trim(strtolower($_SESSION['department'] ?? '')) : '';
+
+// 3. Check for general manage permission (used only for the "Manage Portals" link)
+$can_manage_portals = $is_logged_in && function_exists('can') ? can('manage_portals') : false;
+
+// --- PERMISSION CHECK ---
+if ($is_logged_in && !$is_super_user) {
+    checkPermission('view_portals_menu'); 
+}
+// ------------------------
+
+// --- SEARCH LOGIC ---
+$search_term = trim($_GET['search'] ?? '');
+$search_sql_condition = '';
+$search_param = '';
+
+// Only apply search terms if logged in (Guests do not have a search bar anymore)
+if ($is_logged_in && !empty($search_term)) {
+    $search_sql_condition = " AND p.name LIKE ?";
+    $search_param = '%' . $search_term . '%';
+}
+// --- END SEARCH LOGIC ---
+
+// --- 1. Fetch Categories ---
+$categories = [];
+$cat_sql = "SELECT id, category_name FROM portal_categories ORDER BY sort_order ASC, category_name ASC";
+$cat_result = $conn->query($cat_sql);
+if ($cat_result) {
+    while ($row = $cat_result->fetch_assoc()) {
+        $categories[$row['id']] = $row;
+    }
+}
+
+// --- 2. Fetch User Portals ---
+$portals_data = [];
+
+// Components for the SQL queries
+$base_select_joins = "
+    SELECT 
+        p.id, 
+        p.name, 
+        p.url, 
+        p.icon_path, 
+        p.category_id, 
+        pc.category_name 
+    FROM 
+        portals p 
+    LEFT JOIN 
+        portal_categories pc ON p.category_id = pc.id 
+    LEFT JOIN 
+        (SELECT portal_id, COUNT(*) as dept_count FROM portal_department_visibility GROUP BY portal_id) pdv_count ON p.id = pdv_count.portal_id
+";
+$group_by_order = " 
+    GROUP BY 
+        p.id, p.name, p.url, p.icon_path, p.category_id, pc.category_name 
+    ORDER BY 
+        p.sort_order ASC, p.name ASC
+";
+
+
+if ($is_super_user) {
+    $sql_where = " WHERE 1=1"; 
+    $sql = $base_select_joins . $sql_where . $search_sql_condition . $group_by_order;
+
+    if (!empty($search_term)) {
+        $stmt = $conn->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param("s", $search_param);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            while ($row = $result->fetch_assoc()) {
+                $portals_data[] = $row;
+            }
+            $stmt->close();
+        }
+    } else {
+        $result = $conn->query($sql);
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $portals_data[] = $row;
+            }
+        }
+    }
+    
+} elseif ($is_logged_in) {
+    $sql_where = "
+        WHERE 
+            NOT EXISTS (
+                SELECT 1 
+                FROM portal_department_visibility pdv_not_exist 
+                WHERE pdv_not_exist.portal_id = p.id
+            )
+            OR
+            EXISTS (
+                SELECT 1 
+                FROM portal_department_visibility pdv_exist 
+                WHERE pdv_exist.portal_id = p.id 
+                  AND LOWER(TRIM(pdv_exist.department_name)) = ? 
+            )
+    ";
+
+    $sql = $base_select_joins . $sql_where . $search_sql_condition . $group_by_order; 
+
+    $stmt = $conn->prepare($sql);
+    if ($stmt) {
+        $params = [$user_dept];
+        $types = "s"; 
+
+        if (!empty($search_term)) {
+            $types .= "s";
+            $params[] = $search_param;
+        }
+
+        $stmt->bind_param($types, ...$params); 
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        while ($row = $result->fetch_assoc()) {
+            $portals_data[] = $row;
+        }
+        $stmt->close();
+    }
+} else {
+    $sql_where = "
+        WHERE 
+            NOT EXISTS (
+                SELECT 1 
+                FROM portal_department_visibility pdv_not_exist 
+                WHERE pdv_not_exist.portal_id = p.id
+            )
+    ";
+    
+    $sql = $base_select_joins . $sql_where . $search_sql_condition . $group_by_order;
+
+    if (!empty($search_term)) {
+        $stmt = $conn->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param("s", $search_param);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            while ($row = $result->fetch_assoc()) { 
+                $portals_data[] = $row; 
+            }
+            $stmt->close();
+        }
+    } else {
+        $result = $conn->query($sql);
+        if ($result) {
+            while ($row = $result->fetch_assoc()) { 
+                $portals_data[] = $row; 
+            }
+        }
+    }
+}
+
+// Group portals by category for tab display
+$portals_by_category = [];
+foreach ($portals_data as $portal) {
+    $categoryId = $portal['category_id'] ?? 0;
+    if (!isset($portals_by_category[$categoryId])) {
+        $portals_by_category[$categoryId] = [];
+    }
+    $portals_by_category[$categoryId][] = $portal;
+}
+
+// Fetch Dynamic Clock Configurations
+$clock_settings_file = '../includes/clock_settings.json';
+$clock_settings = [];
+if (file_exists($clock_settings_file)) {
+    $clock_settings = json_decode(file_get_contents($clock_settings_file), true);
+}
+// Fallback if empty
+if (empty($clock_settings)) {
+    $clock_settings = [
+        ['label' => 'India (IST)', 'timezone' => 'Asia/Kolkata'],
+        ['label' => 'New York (EST/EDT)', 'timezone' => 'America/New_York']
+    ];
+}
+
+$json_clocks = json_encode($clock_settings);
+
+// Determine active tab for page load
+$active_category_id = $_GET['cat'] ?? 'all';
+$active_category_id_int = $active_category_id === 'all' ? 'all' : (int)$active_category_id;
+
+include_once '../includes/header.php';
+?>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --primary-color: #0f766e;
+        --primary-hover: #0d9488;
+        --bg-color: #f8fafc;
+        --card-bg: #ffffff;
+        --border-color: #e2e8f0;
+        --text-main: #334155;
+        --text-light: #64748b;
+        --radius: 12px;
+        --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    }
+    
+    body {
+        font-family: 'Inter', sans-serif;
+        background-color: var(--bg-color) !important;
+        color: var(--text-main);
+        font-size: 0.875rem;
+    }
+    
+    h1, h2, h3, h4, h5, h6 { font-weight: 600; color: #1e293b; }
+    
+    .modern-card {
+        background: var(--card-bg);
+        border-radius: var(--radius);
+        box-shadow: var(--card-shadow);
+        border: 1px solid var(--border-color);
+        overflow: hidden;
+        margin-bottom: 24px;
+    }
+
+    /* Tabs Styling with Visible Scrollbar */
+    .nav-tabs { 
+        border-bottom: 1px solid var(--border-color); 
+        background: #ffffff; 
+        border-radius: var(--radius) var(--radius) 0 0; 
+        margin: 0; 
+    }
+    
+    .nav-tabs-scrollable {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin; 
+        scrollbar-color: #cbd5e1 transparent;
+        padding-bottom: 2px; 
+    }
+    
+    .nav-tabs-scrollable::-webkit-scrollbar {
+        height: 6px;
+    }
+    .nav-tabs-scrollable::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .nav-tabs-scrollable::-webkit-scrollbar-thumb {
+        background-color: #cbd5e1;
+        border-radius: 10px;
+    }
+    .nav-tabs-scrollable::-webkit-scrollbar-thumb:hover {
+        background-color: #94a3b8;
+    }
+
+    .nav-tabs .nav-link { 
+        color: var(--text-light); 
+        border: none; 
+        border-bottom: 2px solid transparent; 
+        font-weight: 500; 
+        padding: 14px 20px; 
+        transition: all 0.2s; 
+        border-radius: 0; 
+        background: transparent;
+        font-size: 0.9rem;
+        white-space: nowrap; 
+    }
+    .nav-tabs .nav-link:hover { color: var(--primary-color); background: #f8fafc; }
+    .nav-tabs .nav-link.active { 
+        color: var(--primary-color); 
+        border-bottom: 2px solid var(--primary-color); 
+        background: transparent; 
+        font-weight: 600; 
+    }
+
+    /* Search Input Styling */
+    .form-control-search {
+        border-radius: 8px;
+        padding: 10px 14px 10px 40px;
+        font-size: 0.875rem;
+        border: 1px solid #cbd5e1;
+        transition: all 0.2s;
+    }
+    .form-control-search:focus {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+    }
+
+    /* Portal Grid & Cards */
+    .portal-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 1.5rem;
+        padding: 1.5rem;
+    }
+    
+    .portal-btn {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 1.25rem 1rem;
+        border-radius: 12px;
+        background-color: #ffffff;
+        border: 1px solid var(--border-color);
+        text-decoration: none;
+        color: var(--text-main);
+        transition: all 0.2s ease-in-out;
+        text-align: center;
+        height: 130px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    
+    .portal-btn:hover {
+        background-color: #f0fdfa;
+        border-color: var(--primary-color);
+        transform: translateY(-4px);
+        box-shadow: 0 10px 15px -3px rgba(15, 118, 110, 0.1), 0 4px 6px -2px rgba(15, 118, 110, 0.05);
+        color: var(--primary-color);
+    }
+    
+    .portal-btn-icon {
+        width: 44px;
+        height: 44px;
+        margin-bottom: 0.75rem;
+        object-fit: contain;
+    }
+    
+    .portal-btn-icon-placeholder {
+        width: 44px;
+        height: 44px;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: #f1f5f9;
+        border-radius: 50%;
+        color: var(--text-light);
+        transition: all 0.2s;
+    }
+    
+    .portal-btn:hover .portal-btn-icon-placeholder {
+        background-color: var(--primary-color);
+        color: #ffffff;
+    }
+
+    .portal-btn-name {
+        font-size: 0.85rem;
+        font-weight: 600;
+        line-height: 1.3;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;  
+        overflow: hidden;
+        word-break: break-word;
+    }
+
+    /* Vertical Modern Analog Clock Styling */
+    .vertical-clock-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 36px; 
+        padding: 10px 0;
+        align-items: flex-end; /* Align the actual clock items to the right side of the container */
+    }
+    
+    .clock-item {
+        display: flex;
+        flex-direction: column; 
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        width: 100%;
+        max-width: 200px;
+    }
+
+    .clock-label {
+        font-size: 0.85rem; 
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--primary-color);
+        margin-bottom: 14px;
+    }
+
+    .clock-time {
+        font-size: 1.25rem; 
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+        color: var(--text-main);
+        margin-bottom: 6px;
+        margin-top: 16px;
+    }
+
+    .clock-date {
+        font-size: 0.75rem; 
+        color: var(--text-light);
+        font-weight: 500;
+    }
+
+    /* DETAILED GREEN-BORDERED ANALOG CLOCK UI */
+    .analog-clock {
+        width: 110px; 
+        height: 110px;
+        border-radius: 50%;
+        position: relative;
+        background: #ffffff; 
+        box-shadow: 0 4px 8px rgba(0,0,0,0.05), inset 0 2px 4px rgba(0,0,0,0.02);
+        border: 4px solid var(--primary-color); 
+    }
+
+    .analog-clock::after {
+        content: '';
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        background: var(--primary-color); 
+        border-radius: 50%;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 10;
+    }
+
+    .clock-hand {
+        position: absolute;
+        bottom: 50%;
+        left: 50%;
+        transform-origin: bottom center;
+        border-radius: 4px;
+        z-index: 5;
+    }
+
+    .hand-hour {
+        width: 4px;
+        height: 26px;
+        margin-left: -2px;
+        background: #334155; 
+    }
+
+    .hand-minute {
+        width: 3px;
+        height: 38px;
+        margin-left: -1.5px;
+        background: #475569; 
+    }
+
+    .hand-second {
+        width: 2px;
+        height: 44px;
+        margin-left: -1px;
+        background: #ef4444; 
+        z-index: 6;
+    }
+
+    /* Numbers & Markers */
+    .clock-number {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #334155; 
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .clock-minute-mark {
+        position: absolute;
+        width: 1px;
+        height: 4px;
+        background: #cbd5e1; 
+        left: 50%;
+        top: 3px;
+        margin-left: -0.5px;
+        transform-origin: center 48px;
+    }
+    
+    .clock-hour-mark {
+        position: absolute;
+        width: 2px;
+        height: 6px;
+        background: var(--primary-color); 
+        left: 50%;
+        top: 3px;
+        margin-left: -1px;
+        transform-origin: center 48px;
+    }
+
+</style>
+
+<div class="container-fluid px-4 px-lg-5 pt-4 pb-5">
+
+    <?php 
+    // 1 = Monday, 2 = Tuesday
+    $current_day = date('N'); 
+
+    // Check if the user is a guest AND if today is Monday or Tuesday
+    if (!$is_logged_in && in_array($current_day, [5, 1, 2])):
+    ?>
+    <style>
+        .scrolling-alert-container { 
+            overflow: hidden; 
+            white-space: nowrap; 
+            position: relative; 
+            width: 100%; 
+        }
+        .scrolling-alert-text { 
+            display: inline-block; 
+            padding-left: 100%;
+            animation: scrollAlert 25s linear infinite; 
+            font-weight: 500; 
+            letter-spacing: 0.3px;
+        }
+        .scrolling-alert-text:hover {
+            animation-play-state: paused; /* Pauses scrolling when hovered */
+        }
+        @keyframes scrollAlert {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-100%); }
+        }
+    </style>
+    <div class="alert shadow-sm mb-4 d-flex align-items-center rounded" role="alert" style="background-color: #f0fdfa; border: 1px solid #14b8a6; color: #0f766e;">
+        <i data-feather="info" class="me-3 flex-shrink-0" style="width: 20px; height: 20px;"></i>
+        <div class="scrolling-alert-container">
+            <span class="scrolling-alert-text">
+                <strong>Weekly Reminder:</strong> Please submit your timesheet, if not already submitted.
+            </span>
+        </div>
+        <button type="button" class="btn-close ms-2 position-relative top-0 end-0" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    <?php endif; ?>
+
+    <div class="row align-items-start">
+        
+        <div class="col-lg-8 col-xl-9 col-xxl-10 mb-4 mb-lg-0">
+            
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-end mb-4 gap-3">
+                <?php if ($is_logged_in): ?>
+                    <div>
+                        <h4 class="fw-bold m-0 text-dark">Internal Portals</h4>
+                        <div class="text-muted small mt-1">Access your authorized applications and tools</div>
+                    </div>
+                    
+                    <div class="position-relative" style="width: 100%; max-width: 300px;">
+                        <i data-feather="search" class="position-absolute text-muted" style="left: 14px; top: 50%; transform: translateY(-50%); width: 16px;"></i>
+                        <input type="search" id="portalSearchInput" class="form-control form-control-search fw-medium" placeholder="Search portals..." aria-label="Search" value="<?php echo htmlspecialchars($search_term); ?>">
+                        <button class="btn btn-link position-absolute p-0 text-muted" type="button" id="clearSearchBtn" style="right: 14px; top: 50%; transform: translateY(-50%); display: <?php echo empty($search_term) ? 'none' : 'block'; ?>;">
+                            <i data-feather="x" style="width: 16px;"></i>
+                        </button>
+                    </div>
+                <?php else: ?>
+                    <div>
+                        <h4 class="fw-bold m-0 text-dark">Good Day!</h4>
+                        <div class="text-muted small mt-1">Select an application below to get started.</div>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <?php if ($is_logged_in): ?>
+                <div class="modern-card">
+                    <ul class="nav nav-tabs nav-tabs-scrollable px-2 d-flex" id="portalTabs" role="tablist">
+                        <li class="nav-item flex-shrink-0" role="presentation">
+                            <button class="nav-link <?php echo ($active_category_id === 'all') ? 'active' : ''; ?>" 
+                                    id="all-tab" data-bs-toggle="tab" data-bs-target="#all-tab-pane" type="button" 
+                                    role="tab" aria-controls="all-tab-pane" aria-selected="<?php echo ($active_category_id === 'all') ? 'true' : 'false'; ?>">
+                                <i data-feather="grid" class="me-2" style="width:16px;"></i>All Portals <span class="badge bg-light text-secondary ms-1 rounded-pill border"><?php echo count($portals_data); ?></span>
+                            </button>
+                        </li>
+                        <?php foreach ($categories as $cat_id => $category): 
+                            $cat_portal_count = count($portals_by_category[$cat_id] ?? []);
+                            if ($cat_portal_count > 0): 
+                        ?>
+                            <li class="nav-item flex-shrink-0" role="presentation">
+                                <button class="nav-link <?php echo ($active_category_id_int === $cat_id) ? 'active' : ''; ?>" 
+                                        id="cat-<?php echo $cat_id; ?>-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#cat-<?php echo $cat_id; ?>-tab-pane" type="button" 
+                                        role="tab" aria-controls="cat-<?php echo $cat_id; ?>-tab-pane" 
+                                        aria-selected="<?php echo ($active_category_id_int === $cat_id) ? 'true' : 'false'; ?>">
+                                    <i data-feather="folder" class="me-2" style="width:16px;"></i><?php echo htmlspecialchars($category['category_name']); ?> <span class="badge bg-light text-secondary ms-1 rounded-pill border"><?php echo $cat_portal_count; ?></span>
+                                </button>
+                            </li>
+                        <?php endif; endforeach; ?>
+                    </ul>
+                    
+                    <div class="modern-card-body bg-light rounded-bottom">
+                        <div class="tab-content" id="portalTabsContent">
+                            
+                            <div class="tab-pane fade <?php echo ($active_category_id === 'all') ? 'show active' : ''; ?>" id="all-tab-pane" role="tabpanel" aria-labelledby="all-tab" tabindex="0">
+                                <?php if (empty($portals_data)): ?>
+                                    <div class="text-center py-5">
+                                        <i data-feather="inbox" class="text-muted mb-3" style="width: 48px; height: 48px; opacity: 0.5;"></i>
+                                        <h5 class="fw-bold text-dark">No Portals Found</h5>
+                                        <p class="text-muted mb-4">
+                                            <?php if (!empty($search_term)): ?>
+                                                No portals found matching "<?php echo htmlspecialchars($search_term); ?>" for your view.
+                                            <?php else: ?>
+                                                No portals are currently available for your department.
+                                            <?php endif; ?>
+                                        </p>
+                                        <?php if ($can_manage_portals): ?>
+                                            <a href="<?= APP_BASE_PATH ?>index.php?route=manage_portals" class="btn btn-primary-modern shadow-sm">Manage Portals</a>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php else: ?>
+                                    <div class="portal-grid">
+                                        <?php foreach ($portals_data as $portal): ?>
+                                            <?php include 'portal_card.partial.php'; ?>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+
+                            <?php foreach ($categories as $cat_id => $category): 
+                                $portals_in_cat = $portals_by_category[$cat_id] ?? [];
+                                if (!empty($portals_in_cat)):
+                            ?>
+                                <div class="tab-pane fade <?php echo ($active_category_id_int === $cat_id) ? 'show active' : ''; ?>" 
+                                         id="cat-<?php echo $cat_id; ?>-tab-pane" role="tabpanel" 
+                                         aria-labelledby="cat-<?php echo $cat_id; ?>-tab" tabindex="0">
+                                    <div class="portal-grid">
+                                        <?php foreach ($portals_in_cat as $portal): ?>
+                                            <?php include 'portal_card.partial.php'; ?>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                            <?php endif; endforeach; ?>
+                        </div>
+                        
+                        <div id="js-empty-state" class="text-center py-5" style="display: none;">
+                            <i data-feather="search" class="text-muted mb-3" style="width: 40px; height: 40px; opacity: 0.5;"></i>
+                            <h6 class="fw-bold text-dark">No matches found</h6>
+                            <p class="text-muted small js-empty-text">Try adjusting your search criteria.</p>
+                        </div>
+                    </div>
+                </div>
+
+            <?php else: ?>
+                <?php if (empty($portals_data)): ?>
+                    <div class="text-center py-5">
+                        <i data-feather="inbox" class="text-muted mb-3" style="width: 48px; height: 48px; opacity: 0.5;"></i>
+                        <h5 class="fw-bold text-dark">No Portals Found</h5>
+                        <p class="text-muted mb-4">No portals are currently available.</p>
+                    </div>
+                <?php else: ?>
+                    <div class="portal-grid mt-0 p-0">
+                        <?php foreach ($portals_data as $portal): ?>
+                            <?php include 'portal_card.partial.php'; ?>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+
+        <div class="col-lg-4 col-xl-3 col-xxl-2 d-flex justify-content-lg-end">
+            <div class="vertical-clock-stack position-sticky" style="top: 75px; width: 100%;" id="clockContainer">
+                </div>
+        </div>
+
+    </div>
+</div>
+
+<?php include_once '../includes/footer.php'; ?>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    if (typeof feather !== 'undefined') {
+        feather.replace();
+    }
+
+    // ==========================================
+    // VERTICAL STACKED ANALOG CLOCKS LOGIC
+    // ==========================================
+    const clocksConfig = <?php echo $json_clocks; ?>;
+    const container = document.getElementById('clockContainer');
+
+    function renderClocks() {
+        const now = new Date();
+        container.innerHTML = ''; 
+
+        clocksConfig.forEach(clock => {
+            let formattedTime = "00:00 AM";
+            let formattedDate = "---";
+            let hDeg = 0, mDeg = 0, sDeg = 0;
+
+            try {
+                const tzTimeStr = now.toLocaleString('en-US', { timeZone: clock.timezone });
+                const tzDate = new Date(tzTimeStr);
+                
+                formattedTime = new Intl.DateTimeFormat('en-US', {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+                }).format(tzDate);
+                
+                formattedDate = new Intl.DateTimeFormat('en-US', {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+                }).format(tzDate);
+
+                const h = tzDate.getHours();
+                const m = tzDate.getMinutes();
+                const s = tzDate.getSeconds();
+
+                hDeg = (h % 12) * 30 + (m * 0.5);
+                mDeg = m * 6 + (s * 0.1);
+                sDeg = s * 6;
+
+            } catch (e) {
+                formattedTime = "Invalid TZ";
+            }
+
+            // Generate clock face (Numbers and Marks)
+            let faceHTML = '';
+            for (let i = 0; i < 60; i++) {
+                if (i % 5 !== 0) {
+                    faceHTML += `<div class="clock-minute-mark" style="transform: rotate(${i * 6}deg);"></div>`;
+                } else {
+                    faceHTML += `<div class="clock-hour-mark" style="transform: rotate(${i * 6}deg);"></div>`;
+                }
+            }
+            
+            // Place 1-12 Numbers in a circle inside the tick marks
+            for (let i = 1; i <= 12; i++) {
+                let angle = i * 30;
+                let rad = angle * (Math.PI / 180);
+                let x = Math.sin(rad) * 36; 
+                let y = -Math.cos(rad) * 36;
+                faceHTML += `<div class="clock-number" style="transform: translate(calc(-50% + ${x}px), calc(-50% + ${y}px));">${i}</div>`;
+            }
+
+            // Create the item HTML dynamically
+            const item = document.createElement('div');
+            item.className = 'clock-item';
+            item.innerHTML = `
+                <div class="clock-label">${escapeHtml(clock.label)}</div>
+                
+                <div class="analog-clock">
+                    ${faceHTML}
+                    <div class="clock-hand hand-hour" style="transform: rotate(${hDeg}deg);"></div>
+                    <div class="clock-hand hand-minute" style="transform: rotate(${mDeg}deg);"></div>
+                    <div class="clock-hand hand-second" style="transform: rotate(${sDeg}deg);"></div>
+                </div>
+
+                <div class="clock-time">${formattedTime}</div>
+                <div class="clock-date">${formattedDate}</div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    function escapeHtml(unsafe) {
+        return unsafe
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    if (clocksConfig && clocksConfig.length > 0) {
+        renderClocks();
+        setInterval(renderClocks, 1000);
+    }
+
+
+    // ==========================================
+    // PORTAL SEARCH & FILTER LOGIC
+    // ==========================================
+    const searchInput = document.getElementById('portalSearchInput');
+    const clearBtn = document.getElementById('clearSearchBtn');
+    const tabs = document.querySelectorAll('.nav-tabs .nav-link');
+    const tabPanes = document.querySelectorAll('.tab-pane');
+    const jsEmptyState = document.getElementById('js-empty-state');
+    const jsEmptyText = document.querySelector('.js-empty-text');
+    let activeTab = '<?php echo htmlspecialchars($active_category_id); ?>';
+    let timeout = null;
+
+    if (searchInput) {
+        function filterPortals() {
+            const term = searchInput.value.trim().toLowerCase();
+            clearBtn.style.display = term.length > 0 ? 'block' : 'none';
+
+            const activePaneId = activeTab === 'all' ? 'all-tab-pane' : 'cat-' + activeTab + '-tab-pane';
+            const activePane = document.getElementById(activePaneId);
+            if (!activePane) return;
+
+            const portals = activePane.querySelectorAll('.portal-btn');
+            let visibleCount = 0;
+
+            portals.forEach(card => {
+                const name = card.querySelector('.portal-btn-name')?.textContent.toLowerCase() || '';
+                if (name.includes(term) || term === '') {
+                    card.style.display = '';
+                    visibleCount++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+
+            if (visibleCount === 0 && portals.length > 0) {
+                jsEmptyText.textContent = `No portals found matching "${term}" in this category.`;
+                jsEmptyState.style.display = 'block';
+                activePane.querySelector('.portal-grid').style.display = 'none';
+            } else {
+                jsEmptyState.style.display = 'none';
+                if (activePane.querySelector('.portal-grid')) {
+                    activePane.querySelector('.portal-grid').style.display = 'grid';
+                }
+            }
+        }
+
+        tabs.forEach(tab => {
+            tab.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                tabs.forEach(t => t.classList.remove('active'));
+                tabPanes.forEach(p => p.classList.remove('show', 'active'));
+
+                tab.classList.add('active');
+
+                const tabIdMatch = tab.id.match(/cat-(\d+)-tab/);
+                const tabId = tab.id === 'all-tab' ? 'all' : (tabIdMatch ? tabIdMatch[1] : null);
+                
+                if (tabId) {
+                    activeTab = tabId;
+
+                    const targetPane = document.querySelector(`#${tabId === 'all' ? 'all-tab-pane' : 'cat-' + tabId + '-tab-pane'}`);
+                    if (targetPane) {
+                        targetPane.classList.add('show', 'active');
+                    }
+                    
+                    filterPortals();
+                }
+            });
+        });
+
+        searchInput.addEventListener('input', function() {
+            clearTimeout(timeout);
+            timeout = setTimeout(filterPortals, 150);
+        });
+        
+        clearBtn.addEventListener('click', function() {
+            searchInput.value = '';
+            clearBtn.style.display = 'none';
+            filterPortals();
+        });
+
+        filterPortals();
+    }
+});
+</script>

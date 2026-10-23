@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<?php
+// FILE: includes/header.php
+
+// ALWAYS include the central authentication/session handler FIRST.
+if (file_exists(__DIR__ . '/auth.php')) {
+    require_once __DIR__ . '/auth.php';
+}
+
+// Ensure the DB connection is available, as it defines APP_BASE_PATH.
+if (!defined('APP_BASE_PATH') && file_exists(__DIR__ . '/db_connect.php')) {
+    require_once __DIR__ . '/db_connect.php'; 
+}
+
+// ROUTED VERSION: Get current route instead of PHP_SELF
+$currentRoute = $_GET['route'] ?? 'dashboard';
+
+// Fetch user details if they are missing
+if (isset($_SESSION['loggedin']) && $_SESSION['loggedin'] === true && (!isset($_SESSION['firstname']) || !isset($_SESSION['lastname']) || !isset($_SESSION['role_name']))) {
+    if (isset($_SESSION['username']) && isset($conn)) {
+        $username = $_SESSION['username'];
+        $stmt = $conn->prepare("SELECT u.firstname, u.lastname, u.department, r.role_name 
+                                FROM users u 
+                                LEFT JOIN roles r ON u.role_id = r.id 
+                                WHERE u.username = ?");
+        if ($stmt) {
+            $stmt->bind_param("s", $username);
+            $stmt->execute();
+            $user = $stmt->get_result()->fetch_assoc();
+            if ($user) {
+                $_SESSION['firstname']  = $user['firstname'];
+                $_SESSION['lastname']   = $user['lastname'];
+                $_SESSION['department'] = $user['department'];
+                $_SESSION['role_name']  = $user['role_name'];
+            }
+            $stmt->close();
+        }
+    }
+}
+
+$is_logged_in = isset($_SESSION['loggedin']) && $_SESSION['loggedin'] === true;
+$isSuperAdmin = isset($_SESSION['user_id']) && $_SESSION['user_id'] == 1;
+$hasNoPermissions = $is_logged_in && empty($_SESSION['permissions']) && !$isSuperAdmin;
+
+// --- DETERMINE DYNAMIC LOGO REDIRECT URL ---
+if ($is_logged_in) {
+    if (can('view_dashboard')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=dashboard";
+    } elseif (can('nav_my_profile_main') && !$isSuperAdmin) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=edit_employee";
+    } elseif (can('view_templates_list')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=templates";
+    } elseif (can('view_system_readiness')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=system_readiness";
+    } elseif (can('view_gatepass')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=gatepass";
+    } elseif (can('view_shipment')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=shipment";
+    } elseif (can('view_employees')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=settings";
+    } elseif (can('view_admin_menu')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=settings";
+    } elseif (can('view_portals_menu')) {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=portals";
+    } else {
+        $logoRedirectUrl = APP_BASE_PATH . "?route=edit_employee"; // Ultimate fallback
+    }
+} else {
+    // If guest, keep them on the portals page if they click the logo
+    $logoRedirectUrl = APP_BASE_PATH . "?route=portals";
+}
+// -------------------------------------------
+
+$userInitials = '';
+if (!empty($_SESSION['firstname'])) {
+    $userInitials .= strtoupper(substr($_SESSION['firstname'], 0, 1));
+}
+if (!empty($_SESSION['lastname'])) {
+    $userInitials .= strtoupper(substr($_SESSION['lastname'], 0, 1));
+}
+if (empty($userInitials)) $userInitials = 'U';
+?>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?php echo htmlspecialchars('Sun IT One Pro | ' . ($pageTitle ?? '')); ?></title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-color: #0f766e;
+            --primary-hover: #0d9488;
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --border-color: #e5e7eb;
+            --text-main: #334155;
+            --text-light: #64748b;
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color) !important;
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            padding-top: 64px; /* Offset for fixed navbar */
+            font-size: 0.9rem;
+        }
+
+        /* Modern Navbar Styling */
+        .navbar-custom {
+            background-color: var(--primary-color);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            padding: 0.5rem 1.5rem;
+            z-index: 1040;
+        }
+        
+        .navbar-custom .navbar-brand {
+            font-weight: 700;
+            font-size: 1.15rem;
+            color: #ffffff;
+            letter-spacing: 0.02em;
+            text-decoration: none;
+        }
+
+        .navbar-custom .nav-link {
+            color: rgba(255, 255, 255, 0.85);
+            font-weight: 500;
+            font-size: 0.875rem;
+            padding: 0.5rem 1rem;
+            margin: 0 0.2rem;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .navbar-custom .nav-link svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .navbar-custom .nav-link:hover {
+            color: #ffffff;
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .navbar-custom .nav-link.active {
+            color: #ffffff;
+            background-color: rgba(255, 255, 255, 0.2);
+            font-weight: 600;
+        }
+
+        /* Modern Dropdowns */
+        .navbar-custom .dropdown-toggle::after { display: none; }
+        .dropdown-menu {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            padding: 8px;
+            margin-top: 8px;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .dropdown-menu::before {
+            content: '';
+            position: absolute;
+            top: -10px;
+            left: 0;
+            width: 100%;
+            height: 10px;
+            background: transparent;
+        }
+        
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        .dropdown-item {
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #475569;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: all 0.15s;
+        }
+
+        .dropdown-item svg { width: 14px; height: 14px; }
+        .dropdown-item:hover { background-color: #f1f5f9; color: var(--primary-color); }
+        .dropdown-header { padding: 10px 12px; }
+
+        /* User Profile Avatar */
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: #ffffff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.8rem;
+            border: 1px solid rgba(255,255,255,0.4);
+            transition: all 0.2s;
+        }
+        .nav-link:hover .user-avatar { background-color: rgba(255, 255, 255, 0.3); }
+
+        @media (min-width: 992px) {
+            .navbar-nav .dropdown:hover > .dropdown-menu { display: block; }
+        }
+
+        .dropdown-menu-end {
+            right: 0 !important;
+            left: auto !important;
+        }
+
+        .btn-back-modern {
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--text-light);
+            border: 1px solid var(--border-color);
+            background: var(--card-bg);
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 16px;
+            text-decoration: none;
+        }
+        .btn-back-modern:hover {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+            background: #f0fdfa;
+        }
+
+        .main-content {
+            flex: 1 0 auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* GLOBAL TOAST POSITIONING */
+        .toast-container {
+            position: fixed !important;
+            top: 80px !important;
+            right: 20px !important;
+            z-index: 9999 !important;
+        }
+    </style>
+</head>
+<body>
+
+<?php if (!$hasNoPermissions): ?>
+<nav class="navbar navbar-expand-lg fixed-top navbar-custom">
+    <div class="container-fluid position-relative">
+        
+        <?php if (!$is_logged_in): ?>
+            <a class="navbar-brand m-0" style="z-index: 10;" href="<?php echo htmlspecialchars($logoRedirectUrl); ?>">
+                <img src="<?php echo APP_BASE_PATH; ?>assets/images/favicon.png" alt="Logo" style="height: 40px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.2));">
+            </a>
+            <div class="position-absolute w-100 text-center start-0" style="pointer-events: none; z-index: 5;">
+                <span class="fw-bold fs-4" style="color: #ffffff; letter-spacing: 0.5px;">Sun Internal Portals</span>
+            </div>
+        <?php else: ?>
+            <a class="navbar-brand" href="<?php echo htmlspecialchars($logoRedirectUrl); ?>">
+                <img src="<?php echo APP_BASE_PATH; ?>assets/images/favicon.png" alt="Logo" style="height: 40px; margin-right: 8px; filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.2));">
+                <span>IT One Pro</span>
+            </a>
+
+            <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbar" aria-controls="mainNavbar" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon" style="filter: brightness(0) invert(1);"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="mainNavbar">
+                <ul class="navbar-nav mx-auto mb-2 mb-lg-0">
+                    
+                    <?php if (can('view_dashboard')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'dashboard' || empty($currentRoute)) ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=dashboard"><i data-feather="activity"></i>Dashboard</a></li>
+                    <?php endif; ?>
+                    
+                    <?php if (can('nav_my_profile_main') && !$isSuperAdmin): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'edit_employee') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=edit_employee"><i data-feather="user"></i>My Profile</a></li>
+                    <?php endif; ?>
+
+                    <?php if (can('view_portals_menu')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'portals') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=portals"><i data-feather="grid"></i>Portals</a></li>
+                    <?php endif; ?>
+
+                    <?php if (can('view_templates_list')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'templates') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=templates"><i data-feather="file-text"></i>Templates</a></li>
+                    <?php endif; ?>
+                    
+                    <?php if ((can('view_system_readiness') || can('view_exit_checklist'))): ?>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle <?php echo in_array($currentRoute, ['system_readiness', 'exit_checklist']) ? 'active' : ''; ?>" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i data-feather="list"></i>Checklist
+                            </a>
+                            <ul class="dropdown-menu">
+                                <?php if (can('view_system_readiness')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=system_readiness"><i data-feather="user-check"></i>System Readiness</a></li>
+                                <?php endif; ?>
+                                <?php if (can('view_exit_checklist')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=exit_checklist"><i data-feather="user-minus"></i>Exit Checklist</a></li>
+                                <?php endif; ?>
+                            </ul>
+                        </li>
+                    <?php endif; ?>
+
+                    <?php if (can('view_gatepass')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'gatepass') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=gatepass"><i data-feather="arrow-right-circle"></i>Gatepass</a></li>
+                    <?php endif; ?>
+                    
+                     <?php if (can('view_shipment')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'shipment') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=shipment"><i data-feather="truck"></i>Shipment</a></li>
+                    <?php endif; ?>
+
+                    <?php if (can('view_reports')): ?>
+                        <li class="nav-item"><a class="nav-link <?php echo ($currentRoute == 'reports') ? 'active' : ''; ?>" href="<?php echo APP_BASE_PATH; ?>?route=reports"><i data-feather="bar-chart-2"></i>Reports</a></li>
+                    <?php endif; ?>
+                    
+                    <?php if (can('view_admin_menu')): ?>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle <?php echo in_array($currentRoute, ['settings', 'manage_forms', 'system_audit_trail', 'manage_employees', 'manage_portals']) ? 'active' : ''; ?>" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i data-feather="settings"></i>Administration
+                            </a>
+                            <ul class="dropdown-menu">
+                                <?php if (can('view_users_tab')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=settings"><i data-feather="shield"></i>Access & Settings</a></li>
+                                <?php endif; ?>
+                                <?php if (can('view_manage_forms_page')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=manage_forms"><i data-feather="grid"></i>Manage Form Data</a></li>
+                                <?php endif; ?>
+                                <?php if (can('view_employees')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=manage_employees"><i data-feather="user-check"></i>Manage Employees</a></li>
+                                <?php endif; ?>
+                                <?php if (can('manage_portals')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=manage_portals"><i data-feather="layout"></i>Manage Portals</a></li>
+                                <?php endif; ?>
+                                <?php if (can('view_audit_trail_page')): ?>
+                                    <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=system_audit_trail"><i data-feather="search"></i>Audit Trails</a></li>
+                                <?php endif; ?>
+                            </ul>
+                        </li>
+                     <?php if (can('view_shr')): ?>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle <?php echo in_array($currentRoute, ['index_shr', 'create_shr', 'view_shr', 'dashboard_shr']) ? 'active' : ''; ?>" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i data-feather="log-out"></i>SHR
+                            </a>
+                            <ul class="dropdown-menu">
+                               <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=dashboard_shr"><i data-feather="pie-chart"></i>MGT Dashboard</a></li>
+                               <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=my_handovers_shr"><i data-feather="user"></i>My Handovers</a></li>
+                               <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=index_shr"><i data-feather="list"></i>All Handovers</a></li>
+                               <li><a class="dropdown-item" href="<?php echo APP_BASE_PATH; ?>?route=hp_tickets"><i data-feather="alert-triangle"></i>High Priority Tickets</a></li>
+                            </ul>
+                        </li>
+                    <?php endif; ?>
+
+                    <?php endif; ?>
+                    
+                </ul>
+
+                <ul class="navbar-nav">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link pe-0" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <div class="user-avatar"><?php echo $userInitials; ?></div>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end shadow-lg" aria-labelledby="navbarDropdown" style="min-width: 220px; position: absolute; right: 0; left: auto;">
+                            <li class="dropdown-header text-center pb-3">
+                                <div class="user-avatar mx-auto mb-2 mt-1" style="width: 48px; height: 48px; font-size: 1.2rem; background-color: var(--primary-color); border:none;"><?php echo $userInitials; ?></div>
+                                <div class="fw-bold text-dark fs-6"><?php echo htmlspecialchars(($_SESSION['firstname'] ?? '') . ' ' . ($_SESSION['lastname'] ?? '')); ?></div>
+                                <div class="text-muted small mt-1"><?php echo htmlspecialchars($_SESSION['role_name'] ?? 'No Role'); ?> &bull; <?php echo htmlspecialchars($_SESSION['department'] ?? 'N/A'); ?></div>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            
+                            <?php if (can('nav_my_profile_dropdown') || $isSuperAdmin): ?>
+                                <li><a class="dropdown-item fw-medium mb-1" href="<?php echo APP_BASE_PATH; ?>?route=edit_employee"><i data-feather="user" class="text-primary"></i> My Profile</a></li>
+                            <?php endif; ?>
+
+                            <li><a class="dropdown-item text-danger fw-bold" href="<?php echo APP_BASE_PATH; ?>logout.php"><i data-feather="log-out" class="text-danger"></i> Secure Logout</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        <?php endif; ?>
+    </div>
+</nav>
+<?php endif; ?>
+
+<?php 
+// --- HANGING MAINTENANCE BANNER ---
+$maintenance_flag_file = __DIR__ . '/../maintenance.enable';
+// Added check to only show maintenance banner if the user is actively logged in
+if ($is_logged_in && file_exists($maintenance_flag_file) && !$hasNoPermissions): 
+?>
+    <div class="maintenance-banner text-center text-dark fw-bold shadow-sm d-flex justify-content-center align-items-center gap-2" style="background-color: #fef08a; position: fixed; top: 64px; left: 0; width: 100%; z-index: 1030; padding: 8px 15px; font-size: 0.85rem; border-bottom: 1px solid #eab308;">
+        <i data-feather="alert-triangle" style="width: 16px; height: 16px;"></i>
+        MAINTENANCE MODE IS ACTIVE. You are currently bypassing it. Normal users cannot access the portal.
+    </div>
+    <style> 
+        body { padding-top: 102px !important; } 
+        .toast-container { top: 118px !important; } 
+    </style>
+<?php endif; ?>
+
+<div class="main-content">
+    <?php if ($hasNoPermissions): ?>
+        <div class="container text-center mt-5 pt-5">
+            <i data-feather="lock" style="width: 64px; height: 64px; color: var(--text-light); margin-bottom: 20px;"></i>
+            <h3 class="fw-bold text-dark">Access Denied</h3>
+            <p class="text-muted">You do not have the required permissions to view this system. Please contact the administrator.</p>
+        </div>
+        <?php
+            if (file_exists(__DIR__ . '/../includes/footer.php')) {
+                include_once __DIR__ . '/../includes/footer.php';
+            }
+            die();
+        ?>
+    <?php endif; ?>
+
+    <?php if (isset($showBackButton) && $showBackButton === true): ?>
+    <div class="container-fluid mt-4 px-4"> 
+        <a href="<?php echo htmlspecialchars($backButtonURL ?? 'javascript:history.back()'); ?>" class="btn-back-modern shadow-sm">
+            <i data-feather="arrow-left" class="me-1"></i> Back
+        </a>
+    </div>
+    <?php endif; ?>
